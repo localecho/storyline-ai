@@ -357,6 +357,17 @@ class StoryGenerator:
 db = DatabaseManager()
 story_gen = StoryGenerator()
 
+# Initialize enhanced story selector
+try:
+    from enhanced_story_selector import EnhancedStorySelector
+    enhanced_selector = EnhancedStorySelector()
+    USE_ENHANCED_SELECTOR = True
+    logger.info("Enhanced story selector initialized")
+except ImportError as e:
+    logger.warning(f"Enhanced selector unavailable: {e}")
+    enhanced_selector = None
+    USE_ENHANCED_SELECTOR = False
+
 @app.route("/webhook/voice", methods=['POST'])
 def handle_voice_call():
     """Main webhook handler for incoming voice calls"""
@@ -677,8 +688,35 @@ def handle_start_story():
         response = VoiceResponse()
         
         if digits == '1' and child:
-            # Generate story
-            story = story_gen.select_story(child)
+            # Use enhanced selector if available, otherwise fallback to original
+            if USE_ENHANCED_SELECTOR and enhanced_selector:
+                # Convert to enhanced selector format
+                from enhanced_story_selector import Child as SelectorChild
+                selector_child = SelectorChild(
+                    name=child.name,
+                    age=child.age,
+                    interests=child.interests,
+                    phone_number=caller_number
+                )
+                
+                # Get best story from all sources
+                story_result = enhanced_selector.select_best_story(selector_child, max_duration=10)
+                
+                if story_result:
+                    story = {
+                        'title': story_result.title,
+                        'content': story_result.content,
+                        'duration': story_result.duration
+                    }
+                    logger.info(f"Using {story_result.source} story: {story_result.title}")
+                else:
+                    # Fallback to template generator
+                    story = story_gen.select_story(child)
+                    logger.info("Enhanced selector failed, using template fallback")
+            else:
+                # Use original story generator
+                story = story_gen.select_story(child)
+                logger.info("Using original story generator")
             
             # Update usage tracking
             db.increment_monthly_usage(caller_number)
