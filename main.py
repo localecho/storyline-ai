@@ -200,6 +200,20 @@ class StoryGenerator:
     
     def __init__(self):
         self.story_templates = self._load_story_templates()
+        self.use_ai = os.getenv('USE_OLLAMA_AI', 'false').lower() == 'true'
+        
+        # Initialize Ollama if available
+        if self.use_ai:
+            try:
+                from ollama_story_engine import OllamaStoryEngine
+                self.ollama_engine = OllamaStoryEngine()
+                if self.ollama_engine.check_ollama_status():
+                    logger.info("Ollama AI story generation enabled")
+                else:
+                    logger.warning("Ollama not available, falling back to templates")
+                    self.use_ai = False
+            except ImportError:
+                logger.warning("Ollama engine not available, using templates")
     
     def _load_story_templates(self) -> Dict[str, Dict]:
         """Load pre-written story templates"""
@@ -243,6 +257,46 @@ class StoryGenerator:
     
     def select_story(self, child: Child) -> Dict[str, str]:
         """Select appropriate story based on child's profile"""
+        
+        # Try AI generation first if enabled
+        if self.use_ai and hasattr(self, 'ollama_engine'):
+            try:
+                from ollama_story_engine import Child as OllamaChild
+                ollama_child = OllamaChild(
+                    name=child.name,
+                    age=child.age, 
+                    interests=child.interests
+                )
+                
+                # Select theme based on interests
+                theme_mapping = {
+                    'animals': 'animal friends',
+                    'magic': 'magical forest', 
+                    'space': 'space exploration',
+                    'ocean': 'underwater adventure',
+                    'princess': 'fairy tale',
+                    'superhero': 'superhero',
+                    'dragons': 'magical forest'
+                }
+                
+                theme = "adventure"  # default
+                for interest in child.interests:
+                    if interest.lower() in theme_mapping:
+                        theme = theme_mapping[interest.lower()]
+                        break
+                
+                ai_story = self.ollama_engine.generate_story(ollama_child, theme, "fast")
+                if ai_story:
+                    logger.info(f"Generated AI story: {ai_story['title']}")
+                    return {
+                        "title": ai_story["title"],
+                        "content": ai_story["content"],
+                        "duration": int(ai_story["word_count"] / 25)  # Rough duration estimate
+                    }
+            except Exception as e:
+                logger.warning(f"AI story generation failed: {e}, falling back to templates")
+        
+        # Fallback to template-based stories
         # Filter stories by age
         suitable_stories = {
             key: story for key, story in self.story_templates.items()

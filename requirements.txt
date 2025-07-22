@@ -27,7 +27,7 @@ logging  # Built into Python standard library
 # Environment Variables
 python-dotenv==1.0.0
 
-# HTTP Requests (for future API integrations)
+# HTTP Requests (for API integrations and Ollama)
 requests==2.31.0
 
 # AI/ML Dependencies (for future phases)
