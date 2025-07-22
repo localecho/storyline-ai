@@ -10,7 +10,7 @@ import logging
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from flask import Flask, request, Response
-from twilio.twiml import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse
 from twilio.rest import Client
 import sqlite3
 import uuid
@@ -357,6 +357,9 @@ class StoryGenerator:
 db = DatabaseManager()
 story_gen = StoryGenerator()
 
+# Simple session storage for language preferences
+session_storage = {}
+
 # Initialize enhanced story selector
 try:
     from enhanced_story_selector import EnhancedStorySelector
@@ -392,8 +395,10 @@ def handle_voice_call():
             )
         else:
             # New user flow
-            response.say("Hi! Welcome to StoryLine AI, where bedtime stories come alive! "
-                        "Is this your first time calling? Press 1 for yes, 2 if you've called before.", 
+            # Detect language preference first
+            response.say("Hello! ¡Hola! Welcome to StoryLine AI. "
+                        "For English, press 1. Para Español, press 2. "
+                        "First time calling? Press 1 for English, 2 for Español.", 
                         voice='alice', rate='slow')
             response.gather(
                 num_digits=1,
@@ -412,30 +417,47 @@ def handle_voice_call():
 
 @app.route("/webhook/new_user", methods=['POST'])
 def handle_new_user():
-    """Handle new user registration flow"""
+    """Handle new user registration flow with language support"""
     try:
         caller_number = request.values.get('From', '')
         digits = request.values.get('Digits', '')
         
         response = VoiceResponse()
         
+        # Determine language and store in session
         if digits == '1':
-            # Start registration
-            response.say("Great! Let's set up your family. What's your child's name? "
-                        "Please say their name clearly after the beep.", voice='alice', rate='slow')
+            # English - Store preference and start simplified registration
+            session_storage[caller_number] = {'language': 'en', 'timestamp': datetime.now().isoformat()}
+            response.say("Welcome! Let's get started quickly. Just your child's name and age. "
+                        "Child's name?", voice='alice', rate='slow')
             response.record(
-                max_length=10,
-                action=f'{BASE_URL}/webhook/get_name',
+                max_length=8,
+                action=f'{BASE_URL}/webhook/get_name?lang=en',
                 method='POST',
-                transcribe=True
+                transcribe=True,
+                speech_model='experimental_conversations',  # Enhanced recognition
+                enhanced='true'
+            )
+        elif digits == '2':
+            # Spanish - Store preference and start simplified registration
+            session_storage[caller_number] = {'language': 'es', 'timestamp': datetime.now().isoformat()}
+            response.say("¡Bienvenido! Vamos a empezar rápido. Solo el nombre y edad de su niño. "
+                        "¿Nombre del niño?", voice='alice', rate='slow', language='es-ES')
+            response.record(
+                max_length=8,
+                action=f'{BASE_URL}/webhook/get_name?lang=es',
+                method='POST',
+                transcribe=True,
+                speech_model='experimental_conversations',  # Enhanced recognition
+                enhanced='true'
             )
         else:
-            # Existing user who doesn't have profile
-            response.say("Let me help you find your profile. What's your child's name?", 
-                        voice='alice', rate='slow')
+            # Default to English with slower pace
+            response.say("Welcome! Let's keep this simple. I just need your child's name. "
+                        "Please say their name slowly after the beep.", voice='alice', rate='slow')
             response.record(
                 max_length=10,
-                action=f'{BASE_URL}/webhook/find_profile',
+                action=f'{BASE_URL}/webhook/get_name?lang=en',
                 method='POST',
                 transcribe=True
             )
@@ -445,39 +467,68 @@ def handle_new_user():
     except Exception as e:
         logger.error(f"Error in handle_new_user: {e}")
         response = VoiceResponse()
-        response.say("I'm sorry, there was an error. Let me transfer you to our main menu.")
+        response.say("Sorry, let me try again. Por favor, intente de nuevo.")
         response.redirect(f'{BASE_URL}/webhook/voice')
         return Response(str(response), mimetype='text/xml')
 
 @app.route("/webhook/get_name", methods=['POST'])
 def handle_get_name():
-    """Handle name collection during registration"""
+    """Handle name collection during registration with language support"""
     try:
         caller_number = request.values.get('From', '')
         transcription = request.values.get('TranscriptionText', '').strip()
+        language = request.args.get('lang', 'en')
         
         response = VoiceResponse()
         
         if transcription and len(transcription) > 1:
             # Store name temporarily and ask for age
             name = transcription.title()
-            response.say(f"Nice to meet you, {name}! How old is {name}? "
-                        "Please say their age, like 'five' or 'seven'.", voice='alice', rate='slow')
+            
+            if language == 'es':
+                response.say(f"¡Mucho gusto, {name}! ¿Cuántos años tiene {name}? "
+                            "Diga su edad, como 'cinco' o 'siete'. "
+                            "O puede presionar números en el teléfono.", voice='alice', rate='slow', language='es-ES')
+            else:
+                response.say(f"Nice to meet you, {name}! How old is {name}? "
+                            "Please say their age, like 'five' or 'seven'. "
+                            "Or you can press numbers on your phone.", voice='alice', rate='slow')
+            
+            # Enhanced recording with DTMF fallback option
             response.record(
                 max_length=5,
-                action=f'{BASE_URL}/webhook/get_age?name={name}',
+                action=f'{BASE_URL}/webhook/get_age?name={name}&lang={language}',
                 method='POST',
-                transcribe=True
+                transcribe=True,
+                speech_model='experimental_conversations',
+                enhanced='true',
+                play_beep=True
+            )
+            
+            # Also allow DTMF input
+            response.gather(
+                num_digits=2,
+                action=f'{BASE_URL}/webhook/get_age_dtmf?name={name}&lang={language}',
+                method='POST',
+                timeout=3,
+                finish_on_key='#'
             )
         else:
-            # Retry name collection
-            response.say("I didn't catch that. Could you say your child's name again, nice and clearly?", 
-                        voice='alice', rate='slow')
+            # Enhanced retry with DTMF fallback
+            if language == 'es':
+                response.say("No escuché bien. ¿Puede decir el nombre de su niño otra vez, despacio? "
+                            "O presione 0 para ayuda.", voice='alice', rate='slow', language='es-ES')
+            else:
+                response.say("I didn't catch that. Could you say your child's name again, nice and clearly? "
+                            "Or press 0 for help.", voice='alice', rate='slow')
+            
             response.record(
                 max_length=10,
-                action=f'{BASE_URL}/webhook/get_name',
+                action=f'{BASE_URL}/webhook/get_name?lang={language}',
                 method='POST',
-                transcribe=True
+                transcribe=True,
+                speech_model='experimental_conversations',
+                enhanced='true'
             )
         
         return Response(str(response), mimetype='text/xml')
@@ -485,25 +536,30 @@ def handle_get_name():
     except Exception as e:
         logger.error(f"Error in handle_get_name: {e}")
         response = VoiceResponse()
-        response.say("I'm sorry, there was an error. Let me start over.")
+        response.say("Sorry, let me try again. Lo siento, vamos a intentar otra vez.")
         response.redirect(f'{BASE_URL}/webhook/voice')
         return Response(str(response), mimetype='text/xml')
 
 @app.route("/webhook/get_age", methods=['POST'])
 def handle_get_age():
-    """Handle age collection during registration"""
+    """Handle age collection during registration with language support"""
     try:
         caller_number = request.values.get('From', '')
         name = request.args.get('name', '')
+        language = request.args.get('lang', 'en')
         transcription = request.values.get('TranscriptionText', '').strip().lower()
         
         response = VoiceResponse()
         
-        # Convert spoken numbers to digits
+        # Convert spoken numbers to digits (English and Spanish)
         number_words = {
             'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
             'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-            'eleven': 11, 'twelve': 12
+            'eleven': 11, 'twelve': 12,
+            # Spanish numbers
+            'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+            'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
+            'once': 11, 'doce': 12
         }
         
         age = None
@@ -520,23 +576,61 @@ def handle_get_age():
                 pass
         
         if age and 2 <= age <= 12:
-            # Valid age, ask for interests
-            response.say(f"Perfect! {name} is {age} years old. "
-                        f"What does {name} love? Animals, adventures, magic, or something else? "
-                        "Tell me after the beep.", voice='alice', rate='slow')
-            response.record(
-                max_length=15,
-                action=f'{BASE_URL}/webhook/get_interests?name={name}&age={age}',
-                method='POST',
-                transcribe=True
-            )
+            # Valid age - SIMPLIFIED: Skip interests, use default and complete registration
+            child = db.create_child(name, age, ['adventure', 'animals'], caller_number)
+            monthly_usage = db.check_monthly_usage(caller_number)
+            
+            if language == 'es':
+                if monthly_usage >= 3:
+                    response.say(f"¡Perfecto! {name} tiene {age} años. "
+                                "Ya usó sus 3 cuentos gratis este mes. "
+                                "Para cuentos ilimitados, marque 1, o marque 2 para esperar.", 
+                                voice='alice', rate='slow', language='es-ES')
+                else:
+                    stories_left = 3 - monthly_usage
+                    response.say(f"¡Perfecto! {name} tiene {age} años. "
+                                f"Tiene {stories_left} cuentos gratis este mes. "
+                                "¿Listo para su primer cuento mágico? Marque 1.", 
+                                voice='alice', rate='slow', language='es-ES')
+            else:
+                if monthly_usage >= 3:
+                    response.say(f"Perfect! {name} is {age} years old. "
+                                "You've used your 3 free stories this month. "
+                                "Press 1 to upgrade, or 2 to try again next month.", 
+                                voice='alice', rate='slow')
+                else:
+                    stories_left = 3 - monthly_usage
+                    response.say(f"Perfect! {name} is {age} years old. "
+                                f"You have {stories_left} free stories this month. "
+                                "Ready for your first magical story? Press 1!", 
+                                voice='alice', rate='slow')
+            
+            if monthly_usage >= 3:
+                response.gather(
+                    num_digits=1,
+                    action=f'{BASE_URL}/webhook/upgrade_prompt',
+                    method='POST',
+                    timeout=10
+                )
+            else:
+                response.gather(
+                    num_digits=1,
+                    action=f'{BASE_URL}/webhook/start_story',
+                    method='POST',
+                    timeout=10
+                )
         else:
-            # Retry age collection
-            response.say("I didn't understand the age. Could you say how old your child is? "
-                        "Like 'five years old' or just 'seven'?", voice='alice', rate='slow')
+            # Retry age collection with language support
+            if language == 'es':
+                response.say("No entendí la edad. ¿Puede decir cuántos años tiene su niño? "
+                            "Como 'cinco años' o solo 'siete'?", voice='alice', rate='slow', language='es-ES')
+            else:
+                response.say("I didn't understand the age. Could you say how old your child is? "
+                            "Like 'five years old' or just 'seven'?", voice='alice', rate='slow')
+            
             response.record(
                 max_length=5,
-                action=f'{BASE_URL}/webhook/get_age?name={name}',
+                action=f'{BASE_URL}/webhook/get_age?name={name}&lang={language}',
                 method='POST',
                 transcribe=True
             )
@@ -547,6 +641,92 @@ def handle_get_age():
         logger.error(f"Error in handle_get_age: {e}")
         response = VoiceResponse()
         response.say("I'm sorry, there was an error. Let me start over.")
+        response.redirect(f'{BASE_URL}/webhook/voice')
+        return Response(str(response), mimetype='text/xml')
+
+@app.route("/webhook/get_age_dtmf", methods=['POST'])
+def handle_get_age_dtmf():
+    """Handle age collection via DTMF (phone keypad) input"""
+    try:
+        caller_number = request.values.get('From', '')
+        name = request.args.get('name', '')
+        language = request.args.get('lang', 'en')
+        digits = request.values.get('Digits', '')
+        
+        response = VoiceResponse()
+        
+        if digits and digits.isdigit():
+            age = int(digits)
+            if 2 <= age <= 12:
+                # Valid age - proceed with simplified registration
+                child = db.create_child(name, age, ['adventure', 'animals'], caller_number)
+                monthly_usage = db.check_monthly_usage(caller_number)
+                
+                if language == 'es':
+                    if monthly_usage >= 3:
+                        response.say(f"¡Perfecto! {name} tiene {age} años. "
+                                    "Ya usó sus 3 cuentos gratis este mes. "
+                                    "Para cuentos ilimitados, marque 1, o marque 2 para esperar.", 
+                                    voice='alice', rate='slow', language='es-ES')
+                    else:
+                        stories_left = 3 - monthly_usage
+                        response.say(f"¡Perfecto! {name} tiene {age} años. "
+                                    f"Tiene {stories_left} cuentos gratis este mes. "
+                                    "¿Listo para su primer cuento mágico? Marque 1.", 
+                                    voice='alice', rate='slow', language='es-ES')
+                else:
+                    if monthly_usage >= 3:
+                        response.say(f"Perfect! {name} is {age} years old. "
+                                    "You've used your 3 free stories this month. "
+                                    "Press 1 to upgrade, or 2 to try again next month.", 
+                                    voice='alice', rate='slow')
+                    else:
+                        stories_left = 3 - monthly_usage
+                        response.say(f"Perfect! {name} is {age} years old. "
+                                    f"You have {stories_left} free stories this month. "
+                                    "Ready for your first magical story? Press 1!", 
+                                    voice='alice', rate='slow')
+                
+                if monthly_usage >= 3:
+                    response.gather(
+                        num_digits=1,
+                        action=f'{BASE_URL}/webhook/upgrade_prompt',
+                        method='POST',
+                        timeout=10
+                    )
+                else:
+                    response.gather(
+                        num_digits=1,
+                        action=f'{BASE_URL}/webhook/start_story',
+                        method='POST',
+                        timeout=10
+                    )
+            else:
+                # Invalid age
+                if language == 'es':
+                    response.say("Esa edad no parece correcta. Por favor, marque la edad entre 2 y 12.", 
+                                voice='alice', rate='slow', language='es-ES')
+                else:
+                    response.say("That age doesn't seem right. Please press the age between 2 and 12.", 
+                                voice='alice', rate='slow')
+                
+                response.gather(
+                    num_digits=2,
+                    action=f'{BASE_URL}/webhook/get_age_dtmf?name={name}&lang={language}',
+                    method='POST',
+                    timeout=10,
+                    finish_on_key='#'
+                )
+        else:
+            # No digits or invalid input - redirect to voice
+            response.redirect(f'{BASE_URL}/webhook/get_age?name={name}&lang={language}')
+        
+        return Response(str(response), mimetype='text/xml')
+        
+    except Exception as e:
+        logger.error(f"Error in handle_get_age_dtmf: {e}")
+        response = VoiceResponse()
+        response.say("Sorry, let me try again. Lo siento, vamos a intentar otra vez.")
         response.redirect(f'{BASE_URL}/webhook/voice')
         return Response(str(response), mimetype='text/xml')
 
@@ -698,6 +878,10 @@ def handle_start_story():
                     interests=child.interests,
                     phone_number=caller_number
                 )
+                
+                # Detect language preference from session or use default
+                # TODO: Extract language from session storage
+                language_preference = 'en'  # Default for now
                 
                 # Get best story from all sources
                 story_result = enhanced_selector.select_best_story(selector_child, max_duration=10)

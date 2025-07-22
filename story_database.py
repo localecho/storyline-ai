@@ -33,66 +33,143 @@ class StoryDatabase:
             conn.close()
     
     def init_database(self):
-        """Initialize database with schema from DATABASE_SCHEMA.sql"""
-        schema_path = "DATABASE_SCHEMA.sql"
-        if not os.path.exists(schema_path):
-            logger.warning("DATABASE_SCHEMA.sql not found, creating minimal schema")
-            self._create_minimal_schema()
-            return
-        
-        try:
-            with open(schema_path, 'r') as f:
-                schema_sql = f.read()
-            
-            with self.get_connection() as conn:
-                # Execute schema in chunks to handle complex SQL
-                statements = [stmt.strip() for stmt in schema_sql.split(';') if stmt.strip()]
-                for statement in statements:
-                    if statement and not statement.startswith('--'):
-                        try:
-                            conn.execute(statement)
-                        except sqlite3.Error as e:
-                            if "already exists" not in str(e):
-                                logger.warning(f"Schema execution warning: {e}")
-                conn.commit()
-            
-            logger.info("Database schema initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize database schema: {e}")
-            self._create_minimal_schema()
+        """Initialize database with production-ready schema"""
+        logger.info("Initializing database with production schema")
+        self._create_minimal_schema()
     
     def _create_minimal_schema(self):
-        """Create minimal schema if full schema fails"""
+        """Create production-ready schema with proper error handling"""
         with self.get_connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS stories (
-                    story_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    word_count INTEGER,
-                    estimated_reading_time INTEGER,
-                    copyright_status TEXT DEFAULT 'unknown',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
+            try:
+                # Stories table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS stories (
+                        story_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        subtitle TEXT,
+                        content TEXT NOT NULL,
+                        content_summary TEXT,
+                        word_count INTEGER,
+                        estimated_reading_time INTEGER,
+                        language_code TEXT DEFAULT 'en',
+                        publication_year INTEGER,
+                        copyright_status TEXT DEFAULT 'public_domain',
+                        usage_rights TEXT,
+                        source_attribution TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
                 
-                CREATE TABLE IF NOT EXISTS authors (
-                    author_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    birth_year INTEGER,
-                    death_year INTEGER
-                );
+                # Authors table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS authors (
+                        author_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        birth_year INTEGER,
+                        death_year INTEGER,
+                        nationality TEXT,
+                        biography TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
                 
-                CREATE TABLE IF NOT EXISTS reading_levels (
-                    story_id INTEGER PRIMARY KEY,
-                    age_min INTEGER,
-                    age_max INTEGER,
-                    grade_level_min INTEGER,
-                    grade_level_max INTEGER,
-                    FOREIGN KEY (story_id) REFERENCES stories (story_id)
-                );
-            """)
-            conn.commit()
+                # Story-Author relationships
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS story_authors (
+                        story_id INTEGER,
+                        author_id INTEGER,
+                        role TEXT DEFAULT 'author',
+                        PRIMARY KEY (story_id, author_id),
+                        FOREIGN KEY (story_id) REFERENCES stories(story_id),
+                        FOREIGN KEY (author_id) REFERENCES authors(author_id)
+                    )
+                """)
+                
+                # Reading levels
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS reading_levels (
+                        story_id INTEGER PRIMARY KEY,
+                        lexile_level TEXT,
+                        guided_reading_level TEXT,
+                        grade_level_min INTEGER,
+                        grade_level_max INTEGER,
+                        age_min INTEGER,
+                        age_max INTEGER,
+                        complexity_score INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (story_id) REFERENCES stories(story_id)
+                    )
+                """)
+                
+                # Themes
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS themes (
+                        theme_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE,
+                        category TEXT,
+                        description TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Story-Theme relationships
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS story_themes (
+                        story_id INTEGER,
+                        theme_id INTEGER,
+                        prominence INTEGER DEFAULT 5,
+                        PRIMARY KEY (story_id, theme_id),
+                        FOREIGN KEY (story_id) REFERENCES stories(story_id),
+                        FOREIGN KEY (theme_id) REFERENCES themes(theme_id)
+                    )
+                """)
+                
+                # Usage statistics
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS story_stats (
+                        story_id INTEGER PRIMARY KEY,
+                        times_requested INTEGER DEFAULT 0,
+                        times_completed INTEGER DEFAULT 0,
+                        average_rating REAL DEFAULT 0.0,
+                        total_ratings INTEGER DEFAULT 0,
+                        last_requested TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (story_id) REFERENCES stories(story_id)
+                    )
+                """)
+                
+                # Insert essential themes
+                themes_data = [
+                    ('Friendship', 'social_emotional', 'Stories about making and keeping friends'),
+                    ('Courage', 'moral', 'Stories about being brave and facing fears'),
+                    ('Kindness', 'moral', 'Stories emphasizing compassion and helping others'),
+                    ('Animals', 'subject', 'Stories featuring animals as main characters'),
+                    ('Magic', 'literary', 'Fantasy stories with magical elements'),
+                    ('Adventure', 'literary', 'Stories with exciting journeys and discoveries'),
+                    ('Hard Work', 'moral', 'Stories about the value of effort and dedication'),
+                    ('Perseverance', 'moral', 'Stories about not giving up')
+                ]
+                
+                conn.executemany("""
+                    INSERT OR IGNORE INTO themes (name, category, description) 
+                    VALUES (?, ?, ?)
+                """, themes_data)
+                
+                # Create indexes
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_stories_language ON stories(language_code)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_stories_copyright ON stories(copyright_status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_levels_age ON reading_levels(age_min, age_max)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_story_stats_requested ON story_stats(times_requested DESC)")
+                
+                conn.commit()
+                logger.info("Production schema created successfully")
+                
+            except Exception as e:
+                logger.error(f"Schema creation error: {e}")
+                conn.rollback()
+                raise
     
     def add_story(self, story_data: Dict[str, Any]) -> int:
         """Add a new story to the database"""
@@ -219,6 +296,7 @@ class StoryDatabase:
                       interests: List[str] = None,
                       max_reading_time: Optional[int] = None,
                       copyright_status: Optional[str] = None,
+                      language_code: Optional[str] = None,
                       limit: int = 10) -> List[Dict[str, Any]]:
         """Search for stories based on criteria"""
         
@@ -253,6 +331,11 @@ class StoryDatabase:
         if copyright_status is not None:
             query += " AND s.copyright_status = ?"
             params.append(copyright_status)
+        
+        # Language filtering
+        if language_code is not None:
+            query += " AND s.language_code = ?"
+            params.append(language_code)
         
         # Interest-based theme filtering
         if interests:
@@ -402,9 +485,9 @@ class StoryDatabase:
             return stats
 
 def seed_sample_stories(db: StoryDatabase):
-    """Seed the database with sample public domain stories"""
+    """Seed the database with sample public domain stories including multilingual content"""
     
-    # Sample public domain stories
+    # Sample public domain stories (English and Spanish versions)
     sample_stories = [
         {
             'title': 'The Three Little Pigs',
@@ -435,7 +518,41 @@ The wolf tried to blow down the brick house, but he couldn't. He huffed and puff
 The three little pigs were safe in the strong brick house. They learned that hard work and planning ahead keep you safe. And they all lived happily ever after.""",
             'copyright_status': 'public_domain',
             'publication_year': 1840,
-            'source_attribution': 'Traditional English folk tale'
+            'source_attribution': 'Traditional English folk tale',
+            'language_code': 'en'
+        },
+        
+        {
+            'title': 'Los Tres Cerditos',
+            'content': """Había una vez tres cerditos que salieron al mundo para construir sus propias casas.
+
+El primer cerdito era perezoso. Construyó su casa de paja porque era fácil y rápido. "Esto estará bien," dijo.
+
+El segundo cerdito trabajó un poco más duro. Construyó su casa de palos. "Esto es más fuerte que la paja," pensó.
+
+El tercer cerdito era muy trabajador. Construyó su casa de ladrillos, trabajando todo el día. "Esto me mantendrá seguro," dijo.
+
+Un día, llegó un lobo feroz. Olió a los cerditos y decidió que los quería para la cena.
+
+Primero, fue a la casa de paja. "¡Cerdito, cerdito, déjame entrar!"
+
+"¡No, por los pelos de mi barbilla!" dijo el primer cerdito.
+
+"¡Entonces soplaré y resoplaré y tu casa derribaré!" El lobo derribó la casa de paja, pero el cerdito corrió a la casa de palos de su hermano.
+
+El lobo lo siguió. "¡Cerditos, cerditos, déjenme entrar!"
+
+"¡No, por los pelos de nuestras barbillas!"
+
+"¡Entonces soplaré y resoplaré y su casa derribaré!" El lobo también derribó la casa de palos, pero ambos cerditos corrieron a la casa de ladrillos de su hermano.
+
+El lobo trató de derribar la casa de ladrillos, pero no pudo. Sopló y resopló hasta que se cansó.
+
+Los tres cerditos estaban seguros en la casa fuerte de ladrillos. Aprendieron que el trabajo duro y la planificación los mantienen seguros. Y vivieron felices para siempre.""",
+            'copyright_status': 'public_domain',
+            'publication_year': 1840,
+            'source_attribution': 'Cuento tradicional inglés',
+            'language_code': 'es'
         },
         
         {
@@ -454,7 +571,28 @@ The hare woke up and realized the tortoise was almost at the finish line! He ran
 
 All the animals cheered for the tortoise. The hare learned an important lesson that day: "Slow and steady wins the race." Hard work and determination are more important than just being fast.""",
             'copyright_status': 'public_domain',
-            'source_attribution': 'Aesop\'s Fables'
+            'source_attribution': 'Aesop\'s Fables',
+            'language_code': 'en'
+        },
+        
+        {
+            'title': 'La Tortuga y la Liebre',
+            'content': """Había una vez una liebre muy rápida que se jactaba de lo rápido que podía correr. Cansada de escucharla presumir, una tortuga la desafió a una carrera.
+
+Todos los animales del bosque se reunieron para ver. La liebre se rió de la tortuga. "Esta será la carrera más fácil que haya ganado," dijo.
+
+La carrera comenzó y la liebre salió disparada casi fuera de vista. Pronto estaba muy por delante de la tortuga.
+
+"Esto es muy fácil," pensó la liebre. "Tengo mucho tiempo." Decidió tomar una siesta bajo un árbol con sombra.
+
+Mientras tanto, la tortuga siguió caminando lenta pero constantemente. Paso a paso, se movía hacia adelante sin parar. Pasó a la liebre dormida y continuó hacia la línea de meta.
+
+¡La liebre se despertó y se dio cuenta de que la tortuga estaba casi en la línea de meta! Corrió tan rápido como pudo, pero era demasiado tarde. ¡La tortuga había ganado la carrera!
+
+Todos los animales vitorearon a la tortuga. La liebre aprendió una lección importante ese día: "Lento y constante gana la carrera." El trabajo duro y la determinación son más importantes que ser rápido.""",
+            'copyright_status': 'public_domain',
+            'source_attribution': 'Fábulas de Esopo',
+            'language_code': 'es'
         }
     ]
     

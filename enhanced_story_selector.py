@@ -153,17 +153,18 @@ class EnhancedStorySelector:
             metadata=best_story
         )
     
-    def _get_database_stories(self, child: Child, max_duration: Optional[int]) -> List[Dict]:
-        """Get stories from curated database"""
+    def _get_database_stories(self, child: Child, max_duration: Optional[int], language: str = 'en') -> List[Dict]:
+        """Get stories from curated database with language support"""
         if not self.story_database:
             return []
         
-        # Search database with child criteria
+        # Search database with child criteria including language
         stories = self.story_database.search_stories(
             age=child.age,
             interests=child.interests,
             max_reading_time=max_duration,
             copyright_status='public_domain',  # Free stories only for now
+            language_code=language,
             limit=5
         )
         
